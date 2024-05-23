@@ -369,7 +369,6 @@ def batchnorm_backward(dout, cache):
         # z = (x - sample_mean)/sample_stddev
         # out = gamma * z + beta
 
-    # Per, https://piazza.com/class/k76zko2awvo7jc?cid=572
     # batchnorm_backward is supposed to be computed using a staged-computation process
     # similar to https://cs231n.github.io/optimization-2/
 
@@ -714,7 +713,36 @@ def conv_forward_naive(x, w, b, conv_param):
     ###########################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    pad = conv_param['pad']
+    stride = conv_param['stride']
+    N, C, H, W = x.shape
+    F, C, HH, WW = w.shape
+
+    # if "(N + 2 * pad - F)/s" does not yield an int, that means our pad/stride 
+    # setting is wrong
+    assert (H + 2 * pad - HH) % stride == 0, '[Sanity Check] [FAIL]: Conv Layer Failed in Height'
+    assert (W + 2 * pad - WW) % stride == 0, '[Sanity Check] [FAIL]: Conv Layer Failed in Width'
+
+    # output volume size
+    # note that the // division yields an int (while / yields a float)
+    Hout = (H + 2 * pad - HH) // stride + 1 
+    Wout = (W + 2 * pad - WW) // stride + 1
+
+    # create output volume tensor after convolution
+    out = np.zeros((N, F, Hout, Wout))
+
+    # pad H and W axes of the input data, 0 is the default constant for np.pad
+    x_pad = np.pad(x, ((0, 0), (0, 0), (pad, pad), (pad, pad)), 'constant')
+
+    # naive Loops
+    for n in range(N): # for each neuron
+        for f in range(F): # for each filter/kernel
+            for i in range(0, Hout): # for each y activation
+                for j in range(0, Wout): # for each x activation
+                    # each neuron in a particular depth slide in the output volume
+                    # shares weights over the same HH x WW x C region they're 
+                    # looking at in the image; also one bias/filter
+                    out[n, f, i, j] = (x_pad[n, :, i*stride:i*stride+HH, j*stride:j*stride+WW] * w[f, :, :, :]).sum() + b[f]
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ###########################################################################
@@ -742,7 +770,38 @@ def conv_backward_naive(dout, cache):
     ###########################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    x, w, b, conv_param = cache
+    N, C, H, W = x.shape
+    F, C, HH, WW = w.shape
+    stride = conv_param.get('stride', 1)
+    pad = conv_param.get('pad', 0)
+
+    # pad H and W axes of the input data, 0 is the default constant for np.pad
+    x_pad = np.pad(x, ((0, 0), (0, 0), (pad, pad), (pad, pad)), 'constant')
+
+    # output volume size
+    # note that the // division yields an int (while / yields a float)
+    Hout = (H + 2 * pad - HH) // stride + 1 
+    Wout = (W + 2 * pad - WW) // stride + 1
+
+    # construct output
+    dx_pad = np.zeros_like(x_pad)
+    dx = np.zeros_like(x)
+    dw = np.zeros_like(w)
+    db = np.zeros_like(b)
+    
+    # naive Loops
+    for n in range(N): # for each neuron
+        for f in range(F): # for each filter/kernel
+            db[f] += dout[n, f].sum() # one bias/filter
+            for i in range(0, Hout): # for each y activation
+                for j in range(0, Wout): # for each x activation
+                    dw[f] += x_pad[n, :, i * stride:i * stride + HH, j * stride:j * stride + WW] * dout[n, f, i, j]
+                    dx_pad[n, :, i * stride:i * stride + HH, j * stride:j * stride + WW] += w[f] * dout[n, f, i, j]
+    
+    # extract dx from dx_pad since dx.shape needs to match x.shape
+    dx = dx_pad[:, :, pad:pad+H, pad:pad+W]
+
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ###########################################################################
@@ -777,7 +836,30 @@ def max_pool_forward_naive(x, pool_param):
     ###########################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    N, C, H, W = x.shape
+    HH = pool_param.get('pool_height', 2)
+    WW = pool_param.get('pool_width', 2)
+    stride = pool_param.get('stride', 2)
+
+    # if "(N - F)/s" does not yield an int, that means our pad/stride 
+    # setting is wrong
+    assert (H - HH) % stride == 0, '[Sanity Check] [FAIL]: Conv Layer Failed in Height'
+    assert (W - WW) % stride == 0, '[Sanity Check] [FAIL]: Conv Layer Failed in Width'
+
+    # output volume size
+    # note that the // division yields an int (while / yields a float)
+    Hout = (H - HH) // stride + 1
+    Wout = (W - WW) // stride + 1
+
+    # create output volume tensor after maxpool
+    out = np.zeros((N, C, Hout, Wout)) # output has same dims NCHW format as input
+
+    # naive Loops
+    for n in range(N): # for each neuron
+        for i in range(Hout): # for each y activation
+            for j in range(Wout): # for each x activation
+                out[n, :, i, j] = np.amax(x[n, :, i*stride:i*stride+HH, j*stride:j*stride+WW], axis=(-1, -2))
+
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ###########################################################################
@@ -803,7 +885,30 @@ def max_pool_backward_naive(dout, cache):
     ###########################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    x, pool_param = cache
+    N, C, H, W = x.shape
+    HH = pool_param.get('pool_height', 2)
+    WW = pool_param.get('pool_width', 2)
+    stride = pool_param.get('stride', 2)
+
+    # output volume size
+    # note that the // division yields an int (while / yields a float)
+    Hout = (H - HH) // stride + 1 
+    Wout = (W - WW) // stride + 1
+
+    # output volume size
+    dx = np.zeros_like(x)
+    
+    # naive loops
+    for n in range(N): # for each neuron
+        for c in range(C): # for each channel
+            for i in range(Hout): # for each y activation
+                for j in range(Wout): # for each x activation
+                    # pass gradient only through indices of max pool
+                    ind = np.argmax(x[n, c, i*stride:i*stride+HH, j*stride:j*stride+WW])
+                    ind1, ind2 = np.unravel_index(ind, (HH, WW))
+                    dx[n, c, i*stride:i*stride+HH, j*stride:j*stride+WW][ind1, ind2] = dout[n, c, i, j]
+
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ###########################################################################
@@ -844,7 +949,16 @@ def spatial_batchnorm_forward(x, gamma, beta, bn_param):
     ###########################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    N, C, H, W = x.shape
+
+    # transpose to a channel-last notation (N, H, W, C) and then reshape it to 
+    # norm over N*H*W for each C
+    x = x.transpose(0, 2, 3, 1).reshape(N*H*W, C)
+
+    out, cache = batchnorm_forward(x, gamma, beta, bn_param)
+
+    # transpose the output back to N, C, H, W
+    out = out.reshape(N, H, W, C).transpose(0, 3, 1, 2)
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ###########################################################################
@@ -877,7 +991,19 @@ def spatial_batchnorm_backward(dout, cache):
     ###########################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    N, C, H, W = dout.shape
+
+    # transpose to a channel-last notation (N, H, W, C) and then reshape it to 
+    # norm over N*H*W for each C
+    dout = dout.transpose(0, 2, 3, 1).reshape(N*H*W, C)
+
+    dx, dgamma, dbeta = batchnorm_backward_alt(dout, cache)
+
+    # transpose the output back to N, C, H, W
+    dx = dx.reshape(N, H, W, C).transpose(0, 3, 1, 2)    
+
+    # transpose the output back to N, C, H, W
+
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ###########################################################################
