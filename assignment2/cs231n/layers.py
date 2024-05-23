@@ -1014,12 +1014,11 @@ def spatial_batchnorm_backward(dout, cache):
 
 
 def spatial_groupnorm_forward(x, gamma, beta, G, gn_param):
-    """Computes the forward pass for spatial group normalization.
-    
-    In contrast to layer normalization, group normalization splits each entry in the data into G
-    contiguous pieces, which it then normalizes independently. Per-feature shifting and scaling
-    are then applied to the data, in a manner identical to that of batch normalization and layer
-    normalization.
+    """
+    Computes the forward pass for spatial group normalization.
+    In contrast to layer normalization, group normalization splits each entry 
+    in the data into G contiguous pieces, which it then normalizes independently.
+    Per feature shifting and scaling are then applied to the data, in a manner identical to that of batch normalization and layer normalization.
 
     Inputs:
     - x: Input data of shape (N, C, H, W)
@@ -1044,8 +1043,59 @@ def spatial_groupnorm_forward(x, gamma, beta, G, gn_param):
     ###########################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    # key idea of Groupnorm: compute mean and variance statistics by dividing 
+    # each datapoint into G groups 
+    # gamma/beta (shift/scale) are per channel
 
+    # using minimal-num-of-operations-per-step policy to ease the backward pass  
+
+    N, C, H, W = x.shape
+    size = (N*G, C//G * H * W) # in groupnorm, D = C//G * H * W
+
+    # (0) rehsape X to accommodate G
+    # divide each sample into G groups (G new samples)
+    x = x.reshape((N*G, -1)) # reshape to same as size # reshape NxCxHxW ==> N*GxC/GxHxW =N1*C1 (N1>N*Groups)
+
+    # (1) mini-batch mean by averaging over a particular column / feature dimension (D)
+    # over each sample (N) in a minibatch 
+    mean = x.mean(axis = 1, keepdims= True) # (N,1) # sum through D
+    # can also do mean = 1./N * np.sum(x, axis = 1)
+
+    # (2) subtract mean vector of every training example
+    dev_from_mean = x - mean # (N,D)
+
+    # (3) following the lower branch for the denominator
+    dev_from_mean_sq = dev_from_mean ** 2 # (N,D)
+
+    # (4) mini-batch variance
+    var = 1./size[1] * np.sum(dev_from_mean_sq, axis = 1, keepdims= True) # (N,1)
+    # can also do var = x.var(axis = 0)
+
+    # (5) get std dev from variance, add eps for numerical stability
+    stddev = np.sqrt(var + eps) # (N,1)
+
+    # (6) invert the above expression to make it the denominator
+    inverted_stddev = 1./stddev # (N,1)
+
+    # (7) apply normalization
+    # note that this is an element-wise multiplication using broad-casting
+    x_norm = dev_from_mean * inverted_stddev # also called z or x_hat (N,D) 
+    x_norm = x_norm.reshape(N, C, H, W)
+
+    # (8) apply scaling parameter gamma to x
+    scaled_x = gamma * x_norm # (N,D)
+
+    # (9) shift x by beta
+    out = scaled_x + beta # (N,D)
+
+    # backprop sum axis
+    axis = (0, 2, 3)
+
+    # cache values for backward pass
+    cache = {'mean': mean, 'stddev': stddev, 'var': var, 'gamma': gamma, \
+             'beta': beta, 'eps': eps, 'x_norm': x_norm, 'dev_from_mean': dev_from_mean, \
+             'inverted_stddev': inverted_stddev, 'x': x, 'axis': axis, 'size': size, 'G': G, 'scaled_x': scaled_x}
+    
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ###########################################################################
     #                             END OF YOUR CODE                            #
@@ -1054,7 +1104,8 @@ def spatial_groupnorm_forward(x, gamma, beta, G, gn_param):
 
 
 def spatial_groupnorm_backward(dout, cache):
-    """Computes the backward pass for spatial group normalization.
+    """
+    Computes the backward pass for spatial group normalization.
 
     Inputs:
     - dout: Upstream derivatives, of shape (N, C, H, W)
@@ -1073,7 +1124,49 @@ def spatial_groupnorm_backward(dout, cache):
     ###########################################################################
     # *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 
-    pass
+    # convention used is downstream gradient = local gradient * upstream gradient
+    # extract all relevant params
+    beta, gamma, x_norm, var, eps, stddev, dev_from_mean, inverted_stddev, x, mean, axis, size, G, scaled_x = \
+    cache['beta'], cache['gamma'], cache['x_norm'], cache['var'], cache['eps'], \
+    cache['stddev'], cache['dev_from_mean'], cache['inverted_stddev'], cache['x'], \
+    cache['mean'], cache['axis'], cache['size'], cache['G'], cache['scaled_x']
+
+    N, C, H, W = dout.shape
+    
+    # (9)
+    dbeta = np.sum(dout, axis = (0,2,3), keepdims = True) #1xCx1x1
+    dscaled_x = dout # N1xC1xH1xW1
+
+    # (8)
+    dgamma = np.sum(dscaled_x * x_norm,axis = (0,2,3), keepdims = True) # N = sum_through_D,W,H([N1xC1xH1xW1]xN1xC1xH1xW1)
+    dx_norm = dscaled_x * gamma # N1xC1xH1xW1 = [N1xC1xH1xW1] x[1xC1x1x1]
+    dx_norm = dx_norm.reshape(size) #(N1*G,C1//G*H1*W1)
+
+    # (7)
+    dinverted_stddev = np.sum(dx_norm * dev_from_mean, axis = 1, keepdims = True) # N = sum_through_D([NxD].*[NxD]) =4×60
+    ddev_from_mean = dx_norm * inverted_stddev #[NxD] = [NxD] x [Nx1]
+
+    # (6)
+    dstddev = (-1/(stddev**2)) * dinverted_stddev # N = N x [N]
+
+    # (5)
+    dvar = 0.5 * (1/np.sqrt(var + eps)) * dstddev # N = [N+const]xN
+
+    # (4)
+    ddev_from_mean_sq = (1/size[1]) * np.ones(size) * dvar # NxD = NxD*N
+
+    # (3)    
+    ddev_from_mean += 2 * dev_from_mean * ddev_from_mean_sq # [NxD] = [NxD]*[NxD]
+
+    # (2)
+    dx = (1) * ddev_from_mean # [NxD] = [NxD]
+    dmean = -1 * np.sum(ddev_from_mean, axis = 1, keepdims = True) # N = sum_through_D[NxD]
+
+    # (1) cache
+    dx += (1/size[1]) * np.ones(size) * dmean # NxD (N= N1*Groups) += [NxD]XN
+
+    # (0):
+    dx = dx.reshape(N, C, H, W)
 
     # *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
     ###########################################################################
